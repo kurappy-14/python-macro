@@ -11,7 +11,7 @@
       「可 / 不可 / エラー（該当行なし）」を判定する。
         A: ファイル名ホスト名   （ファイル名から ``_backup.log`` を除いたもの）
         B: プロンプトホスト名   （末尾から探した ``#`` 行の ``#`` 前）
-        C: .bat ホスト名        （``ls mc-dir`` 以降に現れる .bat 名の接頭辞）
+        C: .dat ホスト名        （``ls mc-dir`` 以降に現れる .dat 名のホスト名部分）
     - 結果を ``検証.txt`` に UTF-8・上書きで出力する。
 
 標準ライブラリのみを使用する。
@@ -44,6 +44,17 @@ ERROR_LABEL = "エラー（該当行なし）"
 #   - euc-jp    : EUC-JP（同上）
 # いずれも失敗した場合は最後に errors="replace" で強制的に読み込む。
 ENCODING_CANDIDATES = ("utf-8-sig", "cp932", "euc-jp")
+
+# .dat ファイル名を検出する正規表現。
+#   - ホスト名: 必ず "Y" で始まり、アンダースコアを含まない（英数字・ハイフン）。
+#     → 先頭の "Y" を起点に取得する。.dat ファイル名の前に不要な文字
+#       （記号・空白・他の文字列）が付いていても、ホスト名は必ず "Y" で
+#       始まる保証があるため、Y を起点にすればホスト名部分のみを抽出できる。
+#   - _NN（連番）は任意。日付 \d{8} は YYYYMMDD の 8 桁のみ許容
+#     （9 桁以上だと直後の "." が一致せずマッチしない）。
+#   - .dat の前後に不要な文字が付き得るため、行頭・行末は固定しない。
+#   - 対応する 2 形式: <host>_00_20260101.dat / <host>_20260101.dat
+DAT_PATTERN = re.compile(r"(Y[A-Za-z0-9-]*)_(?:\d{2}_)?\d{8}\.dat")
 
 
 def read_lines(path):
@@ -103,34 +114,37 @@ def find_marker_index(lines):
     return None
 
 
-def collect_bat_hosts(target_lines, filename_host):
-    """検証対象範囲の各行から .bat ファイル名を検出し、
-    その接頭辞（.bat ホスト名）を集合で返す。
+def collect_dat_hosts(target_lines):
+    """検証対象範囲の各行から .dat ファイル名を検出し、
+    ホスト名部分（.dat ホスト名）を集合で返す。
 
-    パターン: ``{ファイル名ホスト名}_(?:\\d{2}_)?\\d{8}\\.bat``
+    パターン:
+        ``(Y[A-Za-z0-9-]*)_(?:\\d{2}_)?\\d{8}\\.dat``
+
+    前提:
+      - ホスト名はすべて "Y" で始まる。
+      - ホスト名にアンダースコアは含まない。
       - 日付部分は YYYYMMDD（8 桁）のみ許容。
-      - 例: tokyo_sw01_00_20260101.bat / tokyo_sw01_20260101.bat
+      - .dat ファイル名の前後に不要な文字が付く場合があるため、
+        行内のどこにあっても検出する。
+      - 例: YHOST01_00_20260101.dat / YHOST01_20260101.dat
     """
-    # ファイル名ホスト名は正規表現メタ文字を含み得るためエスケープする。
-    pattern = re.compile(
-        re.escape(filename_host) + r"_(?:\d{2}_)?\d{8}\.bat"
-    )
-    # 内包表記で全行・全マッチを走査し、接頭辞のみを集合に収集（重複除去）。
+    # 内包表記で全行・全マッチを走査し、ホスト名グループのみを集合に収集（重複除去）。
     return {
-        match.split("_")[0]
+        match.group(1)
         for line in target_lines
-        for match in pattern.findall(line)
+        for match in DAT_PATTERN.finditer(line)
     }
 
 
-def is_ok(filename_host, prompt_host, bat_hosts):
+def is_ok(filename_host, prompt_host, dat_hosts):
     """A/B/C を比較し、「可」条件を満たすかどうかを返す。"""
-    # ここに来る時点でエラー条件（B 無し / マーカー無し / .bat 無し）は除外済み。
+    # ここに来る時点でエラー条件（B 無し / マーカー無し / .dat 無し）は除外済み。
     a = filename_host
     b = prompt_host
 
     # 可: A==B かつ C が 1 件以上、かつ全ての C が A と一致。
-    return a == b and bat_hosts and all(c == a for c in bat_hosts)
+    return a == b and dat_hosts and all(c == a for c in dat_hosts)
 
 
 def process_file(path):
@@ -155,18 +169,18 @@ def process_file(path):
     # 基準行自体は含めず、その後ろ（末尾側）の行を対象範囲とする。
     target_lines = lines[marker_index + 1:]
 
-    # 6. .bat ホスト名の収集
-    bat_hosts = collect_bat_hosts(target_lines, filename_host)
-    if not bat_hosts:
+    # 6. .dat ホスト名の収集
+    dat_hosts = collect_dat_hosts(target_lines)
+    if not dat_hosts:
         return "error", f"{original_name} > {ERROR_LABEL}"
 
     # 7. 検証・判定
-    if is_ok(filename_host, prompt_host, bat_hosts):
+    if is_ok(filename_host, prompt_host, dat_hosts):
         return "ok", f"{original_name} > 可"
 
     # 不可: A/B/C は揃っているが「可」条件を満たさない。
-    # 不一致があっても検出された全ての .bat ホスト名を出力する。
-    c_part = ",".join(bat_hosts)
+    # 不一致があっても検出された全ての .dat ホスト名を出力する。
+    c_part = ",".join(dat_hosts)
     return "ng", f"{original_name} > 不可 > {filename_host}/{prompt_host}/{c_part}"
 
 
