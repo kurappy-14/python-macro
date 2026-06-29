@@ -38,17 +38,44 @@ MARKER = "ls mc-dir"
 # エラー（該当行なし）メッセージ
 ERROR_LABEL = "エラー（該当行なし）"
 
+# 読み込み時に試行するエンコーディング（先頭から順に試す）。
+#   - utf-8-sig : UTF-8（BOM 付き／無し両対応。BOM があれば自動除去）
+#   - cp932     : Shift_JIS 系（機器ログで混在することがあるため保険）
+#   - euc-jp    : EUC-JP（同上）
+# いずれも失敗した場合は最後に errors="replace" で強制的に読み込む。
+ENCODING_CANDIDATES = ("utf-8-sig", "cp932", "euc-jp")
+
 
 def read_lines(path):
-    """ファイルを UTF-8 で読み込み、行リストを返す。
+    """ファイルを読み込み、行リストを返す。
+
+    入力は基本 UTF-8 だが、実機ログでは先頭に BOM が付いていたり、
+    不正バイトが混入して UnicodeDecodeError になることがある。
+    そのため、以下の順で堅牢にデコードする。
+      1. utf-8-sig（BOM 付き UTF-8 を含めて優先的に試す）
+      2. cp932 / euc-jp（別エンコーディング混在時の保険）
+      3. すべて失敗した場合は utf-8 + errors="replace" で強制読み込み
+         （検証に使う文字はすべて ASCII のため判定に影響しない）
 
     改行コードは ``\\n`` / ``\\r\\n`` の双方に対応する。
-    ファイルサイズは最大 6KB と小さいため、全行をメモリに読み込む。
+    ファイルサイズは最大 6KB と小さいため、全バイトをメモリに読み込む。
     """
-    # newline="" を指定して改行をそのまま取得し、splitlines() で
-    # \n / \r\n の両方を安全に分割する。
-    with open(path, "r", encoding="utf-8", newline="") as fp:
-        text = fp.read()
+    # まずバイト列として読み込む（再デコードを試せるようにするため）。
+    with open(path, "rb") as fp:
+        raw = fp.read()
+
+    # 候補エンコーディングを順に試し、最初に成功したものを採用する。
+    for encoding in ENCODING_CANDIDATES:
+        try:
+            text = raw.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        # どの候補でもデコードできなかった場合は置換文字で強制デコード。
+        text = raw.decode("utf-8", errors="replace")
+
+    # splitlines() で \n / \r\n の両方を安全に分割する。
     return text.splitlines()
 
 
